@@ -114,37 +114,66 @@ def categorize_items(item):
     """Categorize items for better analysis"""
     if item in ['Caixas Vendidas', 'Caixas Produzidas']:
         return 'Volume'
-    elif 'Custo Ração' in item:
+    elif 'Custo Ração' in str(item):
         return 'Custo Ração'
-    elif 'Custo Logística' in item:
+    elif 'Custo Logística' in str(item):
         return 'Custo Logística'
-    elif 'Custo Embalagem' in item:
+    elif 'Custo Embalagem' in str(item):
         return 'Custo Embalagem'
-    elif 'Custo Produção' in item:
+    elif 'Custo Produção' in str(item):
         return 'Custo Produção'
-    elif 'Custo Manutenção' in item:
+    elif 'Custo Manutenção' in str(item):
         return 'Custo Manutenção'
-    elif 'Custo Utilidades' in item:
+    elif 'Custo Utilidades' in str(item):
         return 'Custo Utilidades'
-    elif 'Despesas' in item:
-        return 'Despesas Operacionais'
-    elif 'Depreciação' in item:
-        return 'Depreciação'
-    elif 'Custo Exportação' in item:
+    elif 'Custo Exportação' in str(item):
         return 'Custo Exportação'
-    elif 'Suporte' in item:
+    elif 'Despesas' in str(item):
+        return 'Despesas Operacionais'
+    elif 'Depreciação' in str(item):
+        return 'Depreciação'
+    elif 'Suporte' in str(item):
         return 'Suporte Operacional'
-    elif 'Vacinas' in item or 'Medicamentos' in item:
+    elif 'Vacinas' in str(item) or 'Medicamentos' in str(item):
         return 'Sanidade Animal'
-    elif 'Integração' in item:
+    elif 'Integração' in str(item):
         return 'Integração'
-    elif 'Perdas' in item:
+    elif 'Perdas' in str(item):
         return 'Perdas Operacionais'
+    elif 'Custo Caixa' in str(item):
+        return 'Custo Caixa Total'
     else:
         return 'Outros'
 
+def safe_divide(a, b):
+    """Safe division to avoid division by zero and NaN issues"""
+    try:
+        if pd.isna(a) or pd.isna(b) or b == 0:
+            return 0
+        result = a / b
+        if pd.isna(result) or np.isinf(result):
+            return 0
+        return result
+    except:
+        return 0
+
+def clean_data_for_charts(df):
+    """Clean data to avoid chart errors"""
+    if df is None or len(df) == 0:
+        return df
+    
+    # Replace NaN and infinite values
+    df = df.replace([np.inf, -np.inf], np.nan).fillna(0)
+    
+    # Remove any remaining problematic values
+    numeric_cols = df.select_dtypes(include=[np.number]).columns
+    for col in numeric_cols:
+        df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+    
+    return df
+
 def calculate_budget_variance(df, selected_companies, latest_date, selected_items):
-    """Calculate budget variance analysis"""
+    """Calculate budget variance analysis with error handling"""
     try:
         # Filter data for analysis
         analysis_data = df[
@@ -153,9 +182,15 @@ def calculate_budget_variance(df, selected_companies, latest_date, selected_item
             (df['Item'].isin(selected_items))
         ].copy()
         
+        if len(analysis_data) == 0:
+            return pd.DataFrame()
+        
         # Separate real and budget data
         real_data = analysis_data[analysis_data['Tipo_Item'] == 'Real'].copy()
         budget_data = analysis_data[analysis_data['Tipo_Item'] == 'Orçado'].copy()
+        
+        if len(real_data) == 0 and len(budget_data) == 0:
+            return pd.DataFrame()
         
         # Merge real and budget data
         budget_analysis = real_data.merge(
@@ -165,13 +200,18 @@ def calculate_budget_variance(df, selected_companies, latest_date, selected_item
             how='outer'
         ).fillna(0)
         
-        # Calculate variances
+        if len(budget_analysis) == 0:
+            return pd.DataFrame()
+        
+        # Calculate variances with safe division
         budget_analysis['Variacao_Absoluta'] = budget_analysis['Valor_real'] - budget_analysis['Valor_orcado']
-        budget_analysis['Variacao_Percentual'] = np.where(
-            budget_analysis['Valor_orcado'] != 0,
-            (budget_analysis['Variacao_Absoluta'] / budget_analysis['Valor_orcado']) * 100,
-            0
+        budget_analysis['Variacao_Percentual'] = budget_analysis.apply(
+            lambda row: safe_divide(row['Variacao_Absoluta'], row['Valor_orcado']) * 100,
+            axis=1
         )
+        
+        # Clean the data
+        budget_analysis = clean_data_for_charts(budget_analysis)
         
         return budget_analysis
         
@@ -222,39 +262,40 @@ if uploaded_file is not None:
             index=0 if len(box_types) > 0 else None
         )
         
-        # Enhanced Item filter - showing all items from Excel
+        # Enhanced Item filter based on actual Excel structure
         st.sidebar.markdown("### 🎯 Filtro de Itens")
         
-        # Get all unique items (excluding volume items)
-        all_items = sorted([item for item in df_melted['Item'].unique() if 'Caixas' not in item])
+        # Get all unique items (excluding volume items and showing only base names)
+        all_items = sorted(df_melted['Item'].unique())
         
-        # Item type filter
-        item_type_filter = st.sidebar.radio(
-            "Tipo de Item",
-            ["Todos", "Apenas Reais", "Apenas Orçados", "Pares Real vs Orçado"]
+        # Categorize items based on what we see in the Excel
+        volume_items = [item for item in all_items if 'Caixas' in item]
+        cost_items = [item for item in all_items if 'Custo' in item]
+        expense_items = [item for item in all_items if 'Despesas' in item]
+        other_items = [item for item in all_items if item not in volume_items + cost_items + expense_items]
+        
+        # Item category selection
+        item_category = st.sidebar.selectbox(
+            "Categoria de Itens",
+            ["Todos", "Custos", "Despesas", "Outros", "Seleção Manual"]
         )
         
-        # Filter items based on type selection
-        if item_type_filter == "Apenas Reais":
-            filtered_items = [item for item in all_items if 'Orçado' not in item]
-        elif item_type_filter == "Apenas Orçados":
-            filtered_items = [item for item in all_items if 'Orçado' in item]
-        elif item_type_filter == "Pares Real vs Orçado":
-            # Show only items that have both real and budget versions
-            base_items = df_melted[df_melted['Tipo_Item'] == 'Real']['Item_Base'].unique()
-            budget_items = df_melted[df_melted['Tipo_Item'] == 'Orçado']['Item_Base'].unique()
-            paired_items = list(set(base_items) & set(budget_items))
-            filtered_items = []
-            for item in paired_items:
-                filtered_items.extend([item, item + ' Orçado'])
+        if item_category == "Custos":
+            available_items = cost_items
+        elif item_category == "Despesas":
+            available_items = expense_items
+        elif item_category == "Outros":
+            available_items = other_items
+        elif item_category == "Seleção Manual":
+            available_items = [item for item in all_items if 'Caixas' not in item]
         else:
-            filtered_items = all_items
+            available_items = [item for item in all_items if 'Caixas' not in item]
         
         # Multi-select for specific items
         selected_items = st.sidebar.multiselect(
             "Itens Específicos",
-            options=filtered_items,
-            default=filtered_items[:10] if len(filtered_items) > 10 else filtered_items
+            options=available_items,
+            default=available_items[:10] if len(available_items) > 10 else available_items
         )
         
         # Analysis type with budget analysis
@@ -300,7 +341,7 @@ if uploaded_file is not None:
                         total_real = companies_only['Valor_real'].sum()
                         total_budget = companies_only['Valor_orcado'].sum()
                         total_variance = total_real - total_budget
-                        variance_pct = (total_variance / total_budget * 100) if total_budget != 0 else 0
+                        variance_pct = safe_divide(total_variance, total_budget) * 100
                         
                         # Count favorable vs unfavorable variances
                         favorable = len(companies_only[companies_only['Variacao_Absoluta'] <= 0])
@@ -310,7 +351,7 @@ if uploaded_file is not None:
                             st.metric(
                                 "💰 Real vs Orçado",
                                 f"R$ {total_real:,.0f}",
-                                f"{variance_pct:+.1f}%",
+                                f"{variance_pct:+.1f}%" if variance_pct != 0 else None,
                                 delta_color="inverse",
                                 help="Total realizado vs orçado"
                             )
@@ -337,7 +378,7 @@ if uploaded_file is not None:
                             )
                         
                         with col5:
-                            accuracy = (favorable / (favorable + unfavorable) * 100) if (favorable + unfavorable) > 0 else 0
+                            accuracy = safe_divide(favorable, (favorable + unfavorable)) * 100
                             st.metric(
                                 "🎯 Precisão Orçamentária",
                                 f"{accuracy:.1f}%",
@@ -356,81 +397,94 @@ if uploaded_file is not None:
                         companies_budget = budget_analysis[budget_analysis['Empresa'] != 'GERAL'].copy()
                         companies_budget = companies_budget.sort_values('Variacao_Percentual', ascending=True)
                         
-                        fig_budget = go.Figure()
-                        
-                        # Add budget bars
-                        fig_budget.add_trace(go.Bar(
-                            name='Orçado',
-                            x=companies_budget['Empresa'],
-                            y=companies_budget['Valor_orcado'],
-                            marker_color='lightblue',
-                            opacity=0.7
-                        ))
-                        
-                        # Add actual bars
-                        fig_budget.add_trace(go.Bar(
-                            name='Real',
-                            x=companies_budget['Empresa'],
-                            y=companies_budget['Valor_real'],
-                            marker_color='darkblue'
-                        ))
-                        
-                        fig_budget.update_layout(
-                            title="Real vs Orçado por Empresa",
-                            barmode='group',
-                            height=400,
-                            xaxis_tickangle=45
-                        )
-                        st.plotly_chart(fig_budget, use_container_width=True)
+                        if len(companies_budget) > 0:
+                            fig_budget = go.Figure()
+                            
+                            # Add budget bars
+                            fig_budget.add_trace(go.Bar(
+                                name='Orçado',
+                                x=companies_budget['Empresa'],
+                                y=companies_budget['Valor_orcado'],
+                                marker_color='lightblue',
+                                opacity=0.7
+                            ))
+                            
+                            # Add actual bars
+                            fig_budget.add_trace(go.Bar(
+                                name='Real',
+                                x=companies_budget['Empresa'],
+                                y=companies_budget['Valor_real'],
+                                marker_color='darkblue'
+                            ))
+                            
+                            fig_budget.update_layout(
+                                title="Real vs Orçado por Empresa",
+                                barmode='group',
+                                height=400,
+                                xaxis_tickangle=45
+                            )
+                            st.plotly_chart(fig_budget, use_container_width=True)
+                        else:
+                            st.info("Não há dados suficientes para o gráfico de performance orçamentária.")
                 
                 with col2:
                     st.subheader("🎯 Análise de Variação")
                     if len(budget_analysis) > 0:
                         companies_budget = budget_analysis[budget_analysis['Empresa'] != 'GERAL'].copy()
                         
-                        # Create variance waterfall
-                        fig_variance = go.Figure(go.Waterfall(
-                            name="Variações",
-                            orientation="v",
-                            measure=["relative"] * len(companies_budget),
-                            x=companies_budget['Empresa'],
-                            y=companies_budget['Variacao_Absoluta'],
-                            text=[f"R$ {x:+,.0f}" for x in companies_budget['Variacao_Absoluta']],
-                            textposition="outside",
-                            connector={"line": {"color": "rgb(63, 63, 63)"}},
-                            increasing={"marker": {"color": "red"}},
-                            decreasing={"marker": {"color": "green"}},
-                        ))
-                        fig_variance.update_layout(
-                            title="Variações Orçamentárias por Empresa",
-                            height=400,
-                            xaxis_tickangle=45
-                        )
-                        st.plotly_chart(fig_variance, use_container_width=True)
+                        if len(companies_budget) > 0:
+                            # Create variance waterfall
+                            fig_variance = go.Figure(go.Waterfall(
+                                name="Variações",
+                                orientation="v",
+                                measure=["relative"] * len(companies_budget),
+                                x=companies_budget['Empresa'],
+                                y=companies_budget['Variacao_Absoluta'],
+                                text=[f"R$ {x:+,.0f}" for x in companies_budget['Variacao_Absoluta']],
+                                textposition="outside",
+                                connector={"line": {"color": "rgb(63, 63, 63)"}},
+                                increasing={"marker": {"color": "red"}},
+                                decreasing={"marker": {"color": "green"}},
+                            ))
+                            fig_variance.update_layout(
+                                title="Variações Orçamentárias por Empresa",
+                                height=400,
+                                xaxis_tickangle=45
+                            )
+                            st.plotly_chart(fig_variance, use_container_width=True)
+                        else:
+                            st.info("Não há dados suficientes para o gráfico de variação.")
                 
                 # Budget accuracy by category
                 st.subheader("📋 Precisão Orçamentária por Categoria")
                 if len(budget_analysis) > 0:
-                    category_accuracy = budget_analysis.groupby('Categoria').agg({
-                        'Valor_real': 'sum',
-                        'Valor_orcado': 'sum',
-                        'Variacao_Absoluta': 'sum',
-                        'Variacao_Percentual': 'mean'
-                    }).reset_index()
-                    
-                    category_accuracy['Precisao'] = np.abs(category_accuracy['Variacao_Percentual'])
-                    category_accuracy = category_accuracy.sort_values('Precisao')
-                    
-                    fig_accuracy = px.bar(
-                        category_accuracy,
-                        x='Categoria',
-                        y='Precisao',
-                        title="Desvio Médio por Categoria (%)",
-                        color='Precisao',
-                        color_continuous_scale='RdYlGn_r'
-                    )
-                    fig_accuracy.update_layout(height=400, xaxis_tickangle=45)
-                    st.plotly_chart(fig_accuracy, use_container_width=True)
+                    try:
+                        category_accuracy = budget_analysis.groupby('Categoria').agg({
+                            'Valor_real': 'sum',
+                            'Valor_orcado': 'sum',
+                            'Variacao_Absoluta': 'sum',
+                            'Variacao_Percentual': 'mean'
+                        }).reset_index()
+                        
+                        category_accuracy['Precisao'] = np.abs(category_accuracy['Variacao_Percentual'])
+                        category_accuracy = category_accuracy.sort_values('Precisao')
+                        category_accuracy = clean_data_for_charts(category_accuracy)
+                        
+                        if len(category_accuracy) > 0:
+                            fig_accuracy = px.bar(
+                                category_accuracy,
+                                x='Categoria',
+                                y='Precisao',
+                                title="Desvio Médio por Categoria (%)",
+                                color='Precisao',
+                                color_continuous_scale='RdYlGn_r'
+                            )
+                            fig_accuracy.update_layout(height=400, xaxis_tickangle=45)
+                            st.plotly_chart(fig_accuracy, use_container_width=True)
+                        else:
+                            st.info("Não há dados suficientes para análise por categoria.")
+                    except Exception as e:
+                        st.error(f"Erro na análise por categoria: {str(e)}")
             
             elif analysis_type == "Análise Real vs Orçado":
                 st.markdown('<h2 class="section-header">🎯 Análise Detalhada Real vs Orçado</h2>', unsafe_allow_html=True)
@@ -449,49 +503,71 @@ if uploaded_file is not None:
                             (filtered_data['Item'].isin(selected_items))
                         ].copy()
                         
-                        # Aggregate by date and item type
-                        time_agg = time_comparison.groupby(['Data', 'Tipo_Item'])['Valor'].sum().reset_index()
-                        
-                        fig_time = px.line(
-                            time_agg,
-                            x='Data',
-                            y='Valor',
-                            color='Tipo_Item',
-                            title="Evolução Real vs Orçado",
-                            labels={'Valor': 'Valor (R$)', 'Tipo_Item': 'Tipo'},
-                            markers=True
-                        )
-                        fig_time.update_layout(height=400)
-                        st.plotly_chart(fig_time, use_container_width=True)
+                        if len(time_comparison) > 0:
+                            # Aggregate by date and item type
+                            time_agg = time_comparison.groupby(['Data', 'Tipo_Item'])['Valor'].sum().reset_index()
+                            time_agg = clean_data_for_charts(time_agg)
+                            
+                            fig_time = px.line(
+                                time_agg,
+                                x='Data',
+                                y='Valor',
+                                color='Tipo_Item',
+                                title="Evolução Real vs Orçado",
+                                labels={'Valor': 'Valor (R$)', 'Tipo_Item': 'Tipo'},
+                                markers=True
+                            )
+                            fig_time.update_layout(height=400)
+                            st.plotly_chart(fig_time, use_container_width=True)
+                        else:
+                            st.info("Não há dados suficientes para comparação temporal.")
                     
                     with col2:
                         st.subheader("📊 Dispersão de Variações")
                         
                         companies_budget = budget_analysis[budget_analysis['Empresa'] != 'GERAL'].copy()
+                        companies_budget = clean_data_for_charts(companies_budget)
                         
-                        fig_scatter = px.scatter(
-                            companies_budget,
-                            x='Valor_orcado',
-                            y='Valor_real',
-                            text='Empresa',
-                            size='Variacao_Absoluta',
-                            color='Variacao_Percentual',
-                            title="Real vs Orçado - Dispersão",
-                            labels={'Valor_orcado': 'Orçado (R$)', 'Valor_real': 'Real (R$)'},
-                            color_continuous_scale='RdYlGn_r'
-                        )
-                        
-                        # Add diagonal line (perfect budget)
-                        max_val = max(companies_budget['Valor_orcado'].max(), companies_budget['Valor_real'].max())
-                        fig_scatter.add_shape(
-                            type="line",
-                            x0=0, y0=0, x1=max_val, y1=max_val,
-                            line=dict(color="gray", width=2, dash="dash")
-                        )
-                        
-                        fig_scatter.update_traces(textposition='top center')
-                        fig_scatter.update_layout(height=400)
-                        st.plotly_chart(fig_scatter, use_container_width=True)
+                        if len(companies_budget) > 0 and companies_budget['Valor_orcado'].sum() > 0:
+                            try:
+                                fig_scatter = px.scatter(
+                                    companies_budget,
+                                    x='Valor_orcado',
+                                    y='Valor_real',
+                                    text='Empresa',
+                                    size='Variacao_Absoluta',
+                                    title="Real vs Orçado - Dispersão",
+                                    labels={'Valor_orcado': 'Orçado (R$)', 'Valor_real': 'Real (R$)'}
+                                )
+                                
+                                # Add diagonal line (perfect budget)
+                                max_val = max(companies_budget['Valor_orcado'].max(), companies_budget['Valor_real'].max())
+                                if max_val > 0:
+                                    fig_scatter.add_shape(
+                                        type="line",
+                                        x0=0, y0=0, x1=max_val, y1=max_val,
+                                        line=dict(color="gray", width=2, dash="dash")
+                                    )
+                                
+                                fig_scatter.update_traces(textposition='top center')
+                                fig_scatter.update_layout(height=400)
+                                st.plotly_chart(fig_scatter, use_container_width=True)
+                            except Exception as e:
+                                st.error(f"Erro no gráfico de dispersão: {str(e)}")
+                                st.info("Usando gráfico alternativo...")
+                                
+                                # Alternative simpler chart
+                                fig_alt = px.bar(
+                                    companies_budget,
+                                    x='Empresa',
+                                    y=['Valor_real', 'Valor_orcado'],
+                                    title="Comparação Real vs Orçado",
+                                    barmode='group'
+                                )
+                                fig_alt.update_layout(height=400, xaxis_tickangle=45)
+                                st.plotly_chart(fig_alt, use_container_width=True)
+                        else:
+                            st.info("Não há dados suficientes para o gráfico de dispersão.")
                     
                     # Detailed variance table
                     st.subheader("📋 Tabela Detalhada de Variações")
@@ -501,25 +577,30 @@ if uploaded_file is not None:
                     display_budget = display_budget[display_budget['Empresa'] != 'GERAL']
                     display_budget = display_budget.sort_values('Variacao_Percentual', key=abs, ascending=False)
                     
-                    # Format values
-                    display_budget['Real'] = display_budget['Valor_real'].apply(lambda x: f"R$ {x:,.2f}")
-                    display_budget['Orçado'] = display_budget['Valor_orcado'].apply(lambda x: f"R$ {x:,.2f}")
-                    display_budget['Var. Absoluta'] = display_budget['Variacao_Absoluta'].apply(lambda x: f"R$ {x:+,.2f}")
-                    display_budget['Var. %'] = display_budget['Variacao_Percentual'].apply(lambda x: f"{x:+.1f}%")
-                    
-                    st.dataframe(
-                        display_budget[['Empresa', 'Item_Base', 'Real', 'Orçado', 'Var. Absoluta', 'Var. %']],
-                        use_container_width=True
-                    )
-                    
-                    # Download variance analysis
-                    csv_variance = budget_analysis.to_csv(index=False).encode('utf-8')
-                    st.download_button(
-                        label="📥 Download Análise de Variação",
-                        data=csv_variance,
-                        file_name=f'analise_variacao_{datetime.now().strftime("%Y%m%d")}.csv',
-                        mime='text/csv'
-                    )
+                    if len(display_budget) > 0:
+                        # Format values
+                        display_budget['Real'] = display_budget['Valor_real'].apply(lambda x: f"R$ {x:,.2f}")
+                        display_budget['Orçado'] = display_budget['Valor_orcado'].apply(lambda x: f"R$ {x:,.2f}")
+                        display_budget['Var. Absoluta'] = display_budget['Variacao_Absoluta'].apply(lambda x: f"R$ {x:+,.2f}")
+                        display_budget['Var. %'] = display_budget['Variacao_Percentual'].apply(lambda x: f"{x:+.1f}%")
+                        
+                        st.dataframe(
+                            display_budget[['Empresa', 'Item_Base', 'Real', 'Orçado', 'Var. Absoluta', 'Var. %']],
+                            use_container_width=True
+                        )
+                        
+                        # Download variance analysis
+                        csv_variance = budget_analysis.to_csv(index=False).encode('utf-8')
+                        st.download_button(
+                            label="📥 Download Análise de Variação",
+                            data=csv_variance,
+                            file_name=f'analise_variacao_{datetime.now().strftime("%Y%m%d")}.csv',
+                            mime='text/csv'
+                        )
+                    else:
+                        st.info("Não há dados de variação para exibir.")
+                else:
+                    st.info("Não há dados suficientes para análise orçamentária. Verifique se há itens com versões 'Real' e 'Orçado'.")
             
             elif analysis_type == "Análise de Custos":
                 st.markdown('<h2 class="section-header">💰 Análise Detalhada de Custos</h2>', unsafe_allow_html=True)
@@ -538,53 +619,70 @@ if uploaded_file is not None:
                         
                         # Monthly cost evolution by category
                         monthly_costs = cost_data.groupby(['Data', 'Categoria', 'Tipo_Item'])['Valor'].sum().reset_index()
+                        monthly_costs = clean_data_for_charts(monthly_costs)
                         
-                        fig_evolution = px.line(
-                            monthly_costs,
-                            x='Data',
-                            y='Valor',
-                            color='Categoria',
-                            line_dash='Tipo_Item',
-                            title="Evolução Mensal dos Custos por Categoria",
-                            labels={'Valor': 'Custo (R$)', 'Data': 'Período'}
-                        )
-                        fig_evolution.update_layout(height=400)
-                        st.plotly_chart(fig_evolution, use_container_width=True)
+                        if len(monthly_costs) > 0:
+                            fig_evolution = px.line(
+                                monthly_costs,
+                                x='Data',
+                                y='Valor',
+                                color='Categoria',
+                                line_dash='Tipo_Item',
+                                title="Evolução Mensal dos Custos por Categoria",
+                                labels={'Valor': 'Custo (R$)', 'Data': 'Período'}
+                            )
+                            fig_evolution.update_layout(height=400)
+                            st.plotly_chart(fig_evolution, use_container_width=True)
+                        else:
+                            st.info("Não há dados suficientes para análise de evolução.")
                     
                     with col2:
                         st.subheader("📊 Participação por Categoria")
                         
                         # Cost breakdown by real vs budget
                         latest_costs = cost_data[cost_data['Data'] == latest_date]
-                        category_breakdown = latest_costs.groupby(['Categoria', 'Tipo_Item'])['Valor'].sum().reset_index()
-                        
-                        fig_breakdown = px.sunburst(
-                            category_breakdown,
-                            path=['Tipo_Item', 'Categoria'],
-                            values='Valor',
-                            title="Distribuição dos Custos"
-                        )
-                        fig_breakdown.update_layout(height=400)
-                        st.plotly_chart(fig_breakdown, use_container_width=True)
+                        if len(latest_costs) > 0:
+                            category_breakdown = latest_costs.groupby(['Categoria', 'Tipo_Item'])['Valor'].sum().reset_index()
+                            category_breakdown = clean_data_for_charts(category_breakdown)
+                            
+                            if len(category_breakdown) > 0:
+                                fig_breakdown = px.sunburst(
+                                    category_breakdown,
+                                    path=['Tipo_Item', 'Categoria'],
+                                    values='Valor',
+                                    title="Distribuição dos Custos"
+                                )
+                                fig_breakdown.update_layout(height=400)
+                                st.plotly_chart(fig_breakdown, use_container_width=True)
+                            else:
+                                st.info("Não há dados suficientes para breakdown por categoria.")
+                        else:
+                            st.info("Não há dados para o período selecionado.")
                     
                     # Cost trend analysis
                     st.subheader("📊 Análise de Tendência de Custos")
                     
                     # Calculate month-over-month growth
                     monthly_total = cost_data.groupby(['Data', 'Tipo_Item'])['Valor'].sum().reset_index()
-                    monthly_total = monthly_total.sort_values('Data')
-                    monthly_total['MoM_Growth'] = monthly_total.groupby('Tipo_Item')['Valor'].pct_change() * 100
-                    
-                    fig_growth = px.bar(
-                        monthly_total,
-                        x='Data',
-                        y='MoM_Growth',
-                        color='Tipo_Item',
-                        title="Crescimento Mensal dos Custos (%)",
-                        labels={'MoM_Growth': 'Crescimento M/M (%)'}
-                    )
-                    fig_growth.update_layout(height=400)
-                    st.plotly_chart(fig_growth, use_container_width=True)
+                    if len(monthly_total) > 0:
+                        monthly_total = monthly_total.sort_values('Data')
+                        monthly_total['MoM_Growth'] = monthly_total.groupby('Tipo_Item')['Valor'].pct_change() * 100
+                        monthly_total = clean_data_for_charts(monthly_total)
+                        
+                        fig_growth = px.bar(
+                            monthly_total,
+                            x='Data',
+                            y='MoM_Growth',
+                            color='Tipo_Item',
+                            title="Crescimento Mensal dos Custos (%)",
+                            labels={'MoM_Growth': 'Crescimento M/M (%)'}
+                        )
+                        fig_growth.update_layout(height=400)
+                        st.plotly_chart(fig_growth, use_container_width=True)
+                    else:
+                        st.info("Não há dados suficientes para análise de tendência.")
+                else:
+                    st.info("Não há dados de custos para análise.")
             
             elif analysis_type == "Performance por Empresa":
                 st.markdown('<h2 class="section-header">🏢 Performance Comparativa por Empresa</h2>', unsafe_allow_html=True)
@@ -596,13 +694,71 @@ if uploaded_file is not None:
                         (filtered_data['Data'] == latest_date)
                     ]
                     
-                    col1, col2 = st.columns(2)
-                    
-                    with col1:
-                        st.subheader("🎯 Budget Performance por Empresa")
+                    if len(company_data) > 0:
+                        col1, col2 = st.columns(2)
+                        
+                        with col1:
+                            st.subheader("🎯 Budget Performance por Empresa")
+                            
+                            budget_perf = calculate_budget_variance(df_melted, selected_companies, latest_date, selected_items)
+                            
+                            if len(budget_perf) > 0:
+                                company_summary = budget_perf.groupby('Empresa').agg({
+                                    'Valor_real': 'sum',
+                                    'Valor_orcado': 'sum',
+                                    'Variacao_Absoluta': 'sum'
+                                }).reset_index()
+                                
+                                company_summary['Variacao_Percentual'] = company_summary.apply(
+                                    lambda row: safe_divide(row['Variacao_Absoluta'], row['Valor_orcado']) * 100,
+                                    axis=1
+                                )
+                                company_summary = clean_data_for_charts(company_summary)
+                                
+                                companies_only = company_summary[company_summary['Empresa'] != 'GERAL']
+                                if len(companies_only) > 0:
+                                    fig_perf = px.bar(
+                                        companies_only,
+                                        x='Empresa',
+                                        y='Variacao_Percentual',
+                                        title="Variação Orçamentária por Empresa (%)",
+                                        color='Variacao_Percentual',
+                                        color_continuous_scale='RdYlGn_r'
+                                    )
+                                    fig_perf.update_layout(height=400, xaxis_tickangle=45)
+                                    fig_perf.add_hline(y=0, line_dash="dash", line_color="gray")
+                                    st.plotly_chart(fig_perf, use_container_width=True)
+                                else:
+                                    st.info("Não há dados de empresas para análise de performance orçamentária.")
+                            else:
+                                st.info("Não há dados suficientes para análise de performance orçamentária.")
+                        
+                        with col2:
+                            st.subheader("📊 Composição de Custos")
+                            
+                            company_costs = company_data[
+                                company_data['Categoria'] != 'Volume'
+                            ].groupby(['Empresa', 'Categoria'])['Valor'].sum().reset_index()
+                            company_costs = clean_data_for_charts(company_costs)
+                            
+                            if len(company_costs) > 0:
+                                fig_composition = px.bar(
+                                    company_costs,
+                                    x='Empresa',
+                                    y='Valor',
+                                    color='Categoria',
+                                    title="Composição de Custos por Empresa",
+                                    labels={'Valor': 'Custo (R$)'}
+                                )
+                                fig_composition.update_layout(height=400, xaxis_tickangle=45)
+                                st.plotly_chart(fig_composition, use_container_width=True)
+                            else:
+                                st.info("Não há dados de custos por empresa.")
+                        
+                        # Performance ranking
+                        st.subheader("🏆 Ranking de Performance Orçamentária")
                         
                         budget_perf = calculate_budget_variance(df_melted, selected_companies, latest_date, selected_items)
-                        
                         if len(budget_perf) > 0:
                             company_summary = budget_perf.groupby('Empresa').agg({
                                 'Valor_real': 'sum',
@@ -610,65 +766,32 @@ if uploaded_file is not None:
                                 'Variacao_Absoluta': 'sum'
                             }).reset_index()
                             
-                            company_summary['Variacao_Percentual'] = (
-                                company_summary['Variacao_Absoluta'] / company_summary['Valor_orcado'] * 100
+                            company_summary['Variacao_Percentual'] = company_summary.apply(
+                                lambda row: safe_divide(row['Variacao_Absoluta'], row['Valor_orcado']) * 100,
+                                axis=1
                             )
                             
-                            fig_perf = px.bar(
-                                company_summary[company_summary['Empresa'] != 'GERAL'],
-                                x='Empresa',
-                                y='Variacao_Percentual',
-                                title="Variação Orçamentária por Empresa (%)",
-                                color='Variacao_Percentual',
-                                color_continuous_scale='RdYlGn_r'
-                            )
-                            fig_perf.update_layout(height=400, xaxis_tickangle=45)
-                            fig_perf.add_hline(y=0, line_dash="dash", line_color="gray")
-                            st.plotly_chart(fig_perf, use_container_width=True)
-                    
-                    with col2:
-                        st.subheader("📊 Composição de Custos")
-                        
-                        company_costs = company_data[
-                            company_data['Categoria'] != 'Volume'
-                        ].groupby(['Empresa', 'Categoria'])['Valor'].sum().reset_index()
-                        
-                        fig_composition = px.bar(
-                            company_costs,
-                            x='Empresa',
-                            y='Valor',
-                            color='Categoria',
-                            title="Composição de Custos por Empresa",
-                            labels={'Valor': 'Custo (R$)'}
-                        )
-                        fig_composition.update_layout(height=400, xaxis_tickangle=45)
-                        st.plotly_chart(fig_composition, use_container_width=True)
-                    
-                    # Performance ranking
-                    st.subheader("🏆 Ranking de Performance Orçamentária")
-                    
-                    if len(budget_perf) > 0:
-                        ranking_data = company_summary[company_summary['Empresa'] != 'GERAL'].copy()
-                        ranking_data['Eficiencia'] = np.where(
-                            ranking_data['Variacao_Percentual'] <= 0, 'Favorável', 'Desfavorável'
-                        )
-                        ranking_data = ranking_data.sort_values('Variacao_Percentual')
-                        ranking_data['Posição'] = range(1, len(ranking_data) + 1)
-                        
-                        # Format for display
-                        ranking_display = ranking_data[['Posição', 'Empresa', 'Valor_real', 'Valor_orcado', 'Variacao_Absoluta', 'Variacao_Percentual', 'Eficiencia']].copy()
-                        ranking_display.columns = ['🏆 Pos.', '🏢 Empresa', '💰 Real', '📊 Orçado', '📈 Var. Abs.', '📉 Var. %', '⭐ Status']
-                        
-                        # Apply styling
-                        def style_performance(val):
-                            if 'Favorável' in str(val):
-                                return 'background-color: #d4edda; color: #155724'
-                            elif 'Desfavorável' in str(val):
-                                return 'background-color: #f8d7da; color: #721c24'
-                            return ''
-                        
-                        styled_df = ranking_display.style.applymap(style_performance, subset=['⭐ Status'])
-                        st.dataframe(styled_df, use_container_width=True)
+                            ranking_data = company_summary[company_summary['Empresa'] != 'GERAL'].copy()
+                            if len(ranking_data) > 0:
+                                ranking_data['Eficiencia'] = np.where(
+                                    ranking_data['Variacao_Percentual'] <= 0, 'Favorável', 'Desfavorável'
+                                )
+                                ranking_data = ranking_data.sort_values('Variacao_Percentual')
+                                ranking_data['Posição'] = range(1, len(ranking_data) + 1)
+                                
+                                # Format for display
+                                ranking_display = ranking_data[['Posição', 'Empresa', 'Valor_real', 'Valor_orcado', 'Variacao_Absoluta', 'Variacao_Percentual', 'Eficiencia']].copy()
+                                ranking_display.columns = ['🏆 Pos.', '🏢 Empresa', '💰 Real', '📊 Orçado', '📈 Var. Abs.', '📉 Var. %', '⭐ Status']
+                                
+                                st.dataframe(ranking_display, use_container_width=True)
+                            else:
+                                st.info("Não há dados para ranking de empresas.")
+                        else:
+                            st.info("Não há dados para ranking de performance orçamentária.")
+                    else:
+                        st.info("Não há dados para as empresas selecionadas no período.")
+                else:
+                    st.info("Selecione pelo menos uma empresa para análise.")
             
             elif analysis_type == "Análise Temporal":
                 st.markdown('<h2 class="section-header">⏱️ Análise de Tendências Temporais</h2>', unsafe_allow_html=True)
@@ -686,18 +809,22 @@ if uploaded_file is not None:
                         
                         # Monthly trends by type
                         monthly_trends = temporal_data.groupby(['Data', 'Tipo_Item'])['Valor'].sum().reset_index()
+                        monthly_trends = clean_data_for_charts(monthly_trends)
                         
-                        fig_trends = px.line(
-                            monthly_trends,
-                            x='Data',
-                            y='Valor',
-                            color='Tipo_Item',
-                            title="Evolução Temporal Real vs Orçado",
-                            labels={'Valor': 'Valor (R$)', 'Data': 'Período'},
-                            markers=True
-                        )
-                        fig_trends.update_layout(height=400)
-                        st.plotly_chart(fig_trends, use_container_width=True)
+                        if len(monthly_trends) > 0:
+                            fig_trends = px.line(
+                                monthly_trends,
+                                x='Data',
+                                y='Valor',
+                                color='Tipo_Item',
+                                title="Evolução Temporal Real vs Orçado",
+                                labels={'Valor': 'Valor (R$)', 'Data': 'Período'},
+                                markers=True
+                            )
+                            fig_trends.update_layout(height=400)
+                            st.plotly_chart(fig_trends, use_container_width=True)
+                        else:
+                            st.info("Não há dados suficientes para análise temporal.")
                     
                     with col2:
                         st.subheader("📊 Análise de Sazonalidade")
@@ -706,45 +833,62 @@ if uploaded_file is not None:
                         seasonal_data = temporal_data.copy()
                         seasonal_data['Month'] = seasonal_data['Data'].dt.month
                         seasonal_summary = seasonal_data.groupby(['Month', 'Tipo_Item'])['Valor'].mean().reset_index()
+                        seasonal_summary = clean_data_for_charts(seasonal_summary)
                         
-                        fig_seasonal = px.line(
-                            seasonal_summary,
-                            x='Month',
-                            y='Valor',
-                            color='Tipo_Item',
-                            title="Padrão Sazonal (Média Mensal)",
-                            labels={'Month': 'Mês', 'Valor': 'Valor Médio (R$)'},
-                            markers=True
-                        )
-                        fig_seasonal.update_layout(height=400)
-                        st.plotly_chart(fig_seasonal, use_container_width=True)
+                        if len(seasonal_summary) > 0:
+                            fig_seasonal = px.line(
+                                seasonal_summary,
+                                x='Month',
+                                y='Valor',
+                                color='Tipo_Item',
+                                title="Padrão Sazonal (Média Mensal)",
+                                labels={'Month': 'Mês', 'Valor': 'Valor Médio (R$)'},
+                                markers=True
+                            )
+                            fig_seasonal.update_layout(height=400)
+                            st.plotly_chart(fig_seasonal, use_container_width=True)
+                        else:
+                            st.info("Não há dados suficientes para análise sazonal.")
                     
                     # Budget accuracy over time
                     st.subheader("📊 Evolução da Precisão Orçamentária")
                     
-                    # Calculate monthly budget accuracy
-                    monthly_accuracy = []
-                    for date in temporal_data['Data'].unique():
-                        month_variance = calculate_budget_variance(df_melted, selected_companies, date, selected_items)
-                        if len(month_variance) > 0:
-                            accuracy = len(month_variance[month_variance['Variacao_Percentual'] <= 5]) / len(month_variance) * 100
-                            monthly_accuracy.append({'Data': date, 'Precisao': accuracy})
-                    
-                    if monthly_accuracy:
-                        accuracy_df = pd.DataFrame(monthly_accuracy)
+                    try:
+                        # Calculate monthly budget accuracy
+                        monthly_accuracy = []
+                        unique_dates = temporal_data['Data'].unique()
                         
-                        fig_accuracy = px.line(
-                            accuracy_df,
-                            x='Data',
-                            y='Precisao',
-                            title="Evolução da Precisão Orçamentária (%)",
-                            labels={'Precisao': 'Precisão (%)', 'Data': 'Período'},
-                            markers=True
-                        )
-                        fig_accuracy.add_hline(y=80, line_dash="dash", line_color="green", 
-                                             annotation_text="Meta: 80%")
-                        fig_accuracy.update_layout(height=400)
-                        st.plotly_chart(fig_accuracy, use_container_width=True)
+                        for date in unique_dates:
+                            month_variance = calculate_budget_variance(df_melted, selected_companies, date, selected_items)
+                            if len(month_variance) > 0:
+                                # Consider items with less than 5% variance as accurate
+                                accurate_items = len(month_variance[abs(month_variance['Variacao_Percentual']) <= 5])
+                                total_items = len(month_variance)
+                                accuracy = safe_divide(accurate_items, total_items) * 100
+                                monthly_accuracy.append({'Data': date, 'Precisao': accuracy})
+                        
+                        if monthly_accuracy:
+                            accuracy_df = pd.DataFrame(monthly_accuracy)
+                            accuracy_df = clean_data_for_charts(accuracy_df)
+                            
+                            fig_accuracy = px.line(
+                                accuracy_df,
+                                x='Data',
+                                y='Precisao',
+                                title="Evolução da Precisão Orçamentária (%)",
+                                labels={'Precisao': 'Precisão (%)', 'Data': 'Período'},
+                                markers=True
+                            )
+                            fig_accuracy.add_hline(y=80, line_dash="dash", line_color="green", 
+                                                 annotation_text="Meta: 80%")
+                            fig_accuracy.update_layout(height=400)
+                            st.plotly_chart(fig_accuracy, use_container_width=True)
+                        else:
+                            st.info("Não há dados suficientes para análise de precisão ao longo do tempo.")
+                    except Exception as e:
+                        st.error(f"Erro na análise de precisão temporal: {str(e)}")
+                else:
+                    st.info("Não há dados temporais para análise.")
             
             # Export functionality
             st.markdown("---")
@@ -754,13 +898,16 @@ if uploaded_file is not None:
             
             with col1:
                 if st.button("📊 Exportar Dados Filtrados", use_container_width=True):
-                    csv_data = filtered_data.to_csv(index=False).encode('utf-8')
-                    st.download_button(
-                        label="📥 Download CSV",
-                        data=csv_data,
-                        file_name=f'dados_filtrados_{datetime.now().strftime("%Y%m%d")}.csv',
-                        mime='text/csv'
-                    )
+                    if len(filtered_data) > 0:
+                        csv_data = filtered_data.to_csv(index=False).encode('utf-8')
+                        st.download_button(
+                            label="📥 Download CSV",
+                            data=csv_data,
+                            file_name=f'dados_filtrados_{datetime.now().strftime("%Y%m%d")}.csv',
+                            mime='text/csv'
+                        )
+                    else:
+                        st.warning("Não há dados para exportar.")
             
             with col2:
                 if st.button("🎯 Exportar Análise Orçamentária", use_container_width=True):
@@ -773,6 +920,8 @@ if uploaded_file is not None:
                             file_name=f'analise_orcamentaria_{datetime.now().strftime("%Y%m%d")}.csv',
                             mime='text/csv'
                         )
+                    else:
+                        st.warning("Não há dados orçamentários para exportar.")
         
         # Enhanced Methodology section
         with st.expander("📖 Metodologia e Definições"):
@@ -782,12 +931,27 @@ if uploaded_file is not None:
             - **Período**: Janeiro 2024 a Maio 2025
             - **Estrutura**: Valores reais e orçados para comparação de performance
             
-            ### 🎯 Categorização de Itens
-            - **Volume**: Caixas Vendidas e Caixas Produzidas
-            - **Custos Diretos**: Ração, Embalagem, Logística, Produção MO
-            - **Custos Indiretos**: Manutenção, Utilidades, Sanidade Animal
-            - **Despesas**: Vendas, Administrativas, Tributárias
-            - **Outros**: Integração, Exportação, Suporte, Perdas
+            ### 🎯 Categorização de Itens Disponíveis
+            **Volume:**
+            - Caixas Vendidas / Caixas Produzidas
+            
+            **Custos Diretos:**
+            - Custo Ração, Custo Embalagem, Custo Logística
+            - Custo Produção MO, Custo Exportação
+            
+            **Custos Indiretos:**
+            - Custo Manutenção, Custos de Utilidades
+            - Custos Vacinas e Medicamentos
+            
+            **Despesas:**
+            - Despesas Vendas, Despesas Administrativas
+            - Despesas Tributárias
+            
+            **Outros:**
+            - Integração, Suporte Operação
+            - Perdas Processo Produtivo
+            - Depreciação Biológica/Não Biológica
+            - Custo Caixa EBT, Custo Caixa Total
             
             ### 📈 Análise Orçamentária
             - **Variação Absoluta**: Valor Real - Valor Orçado
@@ -800,7 +964,7 @@ if uploaded_file is not None:
             - **Período**: Intervalo de datas para análise
             - **Empresas**: Seleção múltipla de subsidiárias
             - **Tipo de Caixa**: Vendidas vs Produzidas
-            - **Tipo de Item**: Reais, Orçados ou Pares comparativos
+            - **Categoria de Itens**: Custos, Despesas, Outros
             - **Itens Específicos**: Seleção granular de categorias
             
             ### ⚠️ Observações Importantes
@@ -809,6 +973,7 @@ if uploaded_file is not None:
             - Análises baseadas no último mês disponível
             - Cores: Verde = Favorável, Vermelho = Desfavorável
             - Meta de precisão orçamentária: 80% dos itens com variação ≤ 5%
+            - Tratamento automático de valores NaN e infinitos
             """)
     
 else:
@@ -829,23 +994,26 @@ else:
         | **Item** | Texto | Item real ou orçado | "Custo Ração" ou "Custo Ração Orçado" |
         | **jan/24...mai/25** | Numérico | Valores mensais | Formato mmm/aa |
         
-        ### 🎯 Itens de Análise Real vs Orçado:
+        ### 🎯 Itens Identificados na Base:
+        
+        **Volume:**
+        - Caixas Vendidas / Caixas Produzidas
+        - Integração
         
         **Custos Principais:**
-        - Custo Ração / Custo Ração Orçado
-        - Custo Logística / Custo Logística Orçado
-        - Custo Embalagem / Custo Embalagem Orçado
-        - Custo Produção MO / Custo Produção MO Orçado
+        - Custo Ração, Custo Logística, Custo Embalagem
+        - Custo Produção MO, Custo Exportação
+        - Custo Manutenção, Custos de Utilidades
+        - Custos Vacinas e Medicamentos
         
         **Despesas:**
-        - Despesas Vendas / Despesas Vendas Orçado
-        - Despesas Administrativas / Despesas Administrativas Orçado
-        - Despesas Tributárias / Despesas Tributárias Orçado
+        - Despesas Vendas, Despesas Administrativas
+        - Despesas Tributárias
         
-        **Outros Custos:**
-        - Custo Manutenção / Custo Manutenção Orçado
-        - Custo Utilidades / Custo Utilidades Orçado
-        - Custos Vacinas e Medicamentos / Custos Vacinas e Medicamentos Orçado
+        **Outros:**
+        - Suporte Operação, Perdas Processo Produtivo
+        - Depreciação Biológica, Depreciação Não Biológica
+        - Custo Caixa EBT, Custo Caixa Total
         
         ### 📊 Empresas do Grupo:
         JOSIDITH, MARUTANI, STRAGLIOTTO, ASA, IANA, AVIMOR, ALEXAVES, 
@@ -859,6 +1027,13 @@ else:
         3. **Análise de Custos**: Evolução e composição dos custos
         4. **Performance por Empresa**: Ranking e comparação entre subsidiárias
         5. **Análise Temporal**: Tendências e sazonalidade dos dados
+        
+        ### 🔧 Correções Implementadas:
+        - Tratamento de valores NaN e infinitos
+        - Validação de dados antes de gráficos
+        - Divisão segura para evitar erros
+        - Limpeza automática de dados problemáticos
+        - Mensagens informativas quando não há dados suficientes
         """)
 
 # Run command: streamlit run app.py
