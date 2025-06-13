@@ -40,6 +40,13 @@ st.markdown("""
         padding-bottom: 0.5rem;
         margin: 1.5rem 0;
     }
+    .alert-box {
+        padding: 1rem;
+        border-radius: 0.5rem;
+        margin: 1rem 0;
+        border-left: 5px solid #e74c3c;
+        background-color: #fdf2f2;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -79,18 +86,17 @@ def load_and_process_data(uploaded_file):
         df_melted['Data'] = df_melted['Data'].apply(convert_date)
         df_melted = df_melted.dropna(subset=['Data'])
         
-        # Categorize items
+        # Clean data - remove zeros and invalid values
+        df_melted = df_melted[df_melted['Valor'].notna()]
+        
+        # Categorize items for better analysis
         df_melted['Categoria'] = df_melted['Item'].apply(categorize_items)
         
-        # Separate data types
-        volume_data = df_melted[df_melted['Item'].isin(['Caixas Vendidas', 'Caixas Produzidas'])].copy()
-        cost_data = df_melted[df_melted['Categoria'] != 'Volume'].copy()
-        
-        return df_melted, volume_data, cost_data
+        return df_melted
         
     except Exception as e:
         st.error(f"Erro ao processar dados: {str(e)}")
-        return None, None, None
+        return None
 
 def categorize_items(item):
     """Categorize items for better analysis"""
@@ -106,53 +112,53 @@ def categorize_items(item):
         return 'Custo Produção'
     elif 'Custo Manutenção' in item:
         return 'Custo Manutenção'
+    elif 'Custo Utilidades' in item:
+        return 'Custo Utilidades'
     elif 'Despesas' in item:
         return 'Despesas Operacionais'
     elif 'Depreciação' in item:
         return 'Depreciação'
+    elif 'Custo Exportação' in item:
+        return 'Custo Exportação'
+    elif 'Suporte' in item:
+        return 'Suporte Operacional'
+    elif 'Vacinas' in item or 'Medicamentos' in item:
+        return 'Sanidade Animal'
     else:
-        return 'Outros Custos'
+        return 'Outros'
 
-def create_executive_kpis(volume_data, cost_data, latest_date):
-    """Create executive-level KPIs"""
-    # Get latest month data
-    latest_volume = volume_data[volume_data['Data'] == latest_date]
-    latest_costs = cost_data[cost_data['Data'] == latest_date]
-    
-    # Calculate total production and sales
-    total_production = latest_volume[
-        (latest_volume['Item'] == 'Caixas Produzidas') & 
-        (latest_volume['Empresa'] == 'GERAL')
-    ]['Valor'].sum()
-    
-    total_sales = latest_volume[
-        (latest_volume['Item'] == 'Caixas Vendidas') & 
-        (latest_volume['Empresa'] == 'GERAL')
-    ]['Valor'].sum()
-    
-    # Calculate total costs
-    total_costs = latest_costs[latest_costs['Empresa'] == 'GERAL']['Valor'].sum()
-    
-    # Calculate efficiency metrics
-    efficiency_rate = (total_sales / total_production * 100) if total_production > 0 else 0
-    cost_per_box = total_costs / total_sales if total_sales > 0 else 0
-    
-    # Get previous month for comparison
-    prev_date = cost_data[cost_data['Data'] < latest_date]['Data'].max()
-    if pd.notna(prev_date):
-        prev_costs = cost_data[(cost_data['Data'] == prev_date) & (cost_data['Empresa'] == 'GERAL')]['Valor'].sum()
-        cost_variation = ((total_costs - prev_costs) / prev_costs * 100) if prev_costs > 0 else 0
-    else:
-        cost_variation = 0
-    
-    return {
-        'total_production': total_production,
-        'total_sales': total_sales,
-        'total_costs': total_costs,
-        'efficiency_rate': efficiency_rate,
-        'cost_per_box': cost_per_box,
-        'cost_variation': cost_variation
-    }
+def calculate_cost_per_box(df, selected_companies, selected_box_type, latest_date):
+    """Calculate cost per box for selected parameters"""
+    try:
+        # Get volume data
+        volume_data = df[
+            (df['Item'] == selected_box_type) & 
+            (df['Data'] == latest_date) &
+            (df['Empresa'].isin(selected_companies + ['GERAL']))
+        ]
+        
+        # Get cost data (excluding volume items)
+        cost_data = df[
+            (df['Categoria'] != 'Volume') & 
+            (df['Data'] == latest_date) &
+            (df['Empresa'].isin(selected_companies + ['GERAL']))
+        ].groupby('Empresa')['Valor'].sum().reset_index()
+        
+        # Merge volume and cost data
+        volume_summary = volume_data.groupby('Empresa')['Valor'].sum().reset_index()
+        volume_summary.columns = ['Empresa', 'Volume']
+        
+        cost_summary = cost_data.copy()
+        cost_summary.columns = ['Empresa', 'Custo_Total']
+        
+        # Calculate cost per box
+        result = cost_summary.merge(volume_summary, on='Empresa', how='inner')
+        result['Custo_por_Caixa'] = result['Custo_Total'] / result['Volume']
+        result = result[result['Volume'] > 0]  # Remove companies with no volume
+        
+        return result
+    except:
+        return pd.DataFrame()
 
 # File upload
 uploaded_file = st.file_uploader(
@@ -164,11 +170,11 @@ uploaded_file = st.file_uploader(
 if uploaded_file is not None:
     # Load data
     with st.spinner("Carregando e processando dados..."):
-        df_melted, volume_data, cost_data = load_and_process_data(uploaded_file)
+        df_melted = load_and_process_data(uploaded_file)
     
     if df_melted is not None:
         # Sidebar filters
-        st.sidebar.markdown('<h2 style="color: #1f77b4;">🔧 Controles Executivos</h2>', unsafe_allow_html=True)
+        st.sidebar.markdown('<h2 style="color: #1f77b4;">🎛️ Filtros de Análise</h2>', unsafe_allow_html=True)
         
         # Date range filter
         min_date = df_melted['Data'].min()
@@ -186,544 +192,540 @@ if uploaded_file is not None:
         selected_companies = st.sidebar.multiselect(
             "🏢 Empresas",
             options=companies,
-            default=companies[:8]  # Default to first 8 companies
+            default=companies[:8] if len(companies) > 8 else companies
         )
         
         # Box type filter
-        box_types = volume_data['Item'].unique()
+        box_types = [item for item in df_melted['Item'].unique() if 'Caixas' in item]
         selected_box_type = st.sidebar.selectbox(
             "📦 Tipo de Volume",
             options=box_types,
-            index=0
+            index=0 if len(box_types) > 0 else None
         )
+        
+        # Item/Category filter - NEW
+        st.sidebar.markdown("### 🎯 Filtro de Itens")
+        filter_type = st.sidebar.radio(
+            "Tipo de Filtro",
+            ["Por Categoria", "Por Item Específico"]
+        )
+        
+        if filter_type == "Por Categoria":
+            categories = sorted([cat for cat in df_melted['Categoria'].unique() if cat != 'Volume'])
+            selected_categories = st.sidebar.multiselect(
+                "Categorias de Custo",
+                options=categories,
+                default=categories[:5] if len(categories) > 5 else categories
+            )
+            # Filter by categories
+            selected_items = df_melted[df_melted['Categoria'].isin(selected_categories)]['Item'].unique()
+        else:
+            cost_items = sorted([item for item in df_melted['Item'].unique() if 'Caixas' not in item])
+            selected_items = st.sidebar.multiselect(
+                "Itens Específicos",
+                options=cost_items,
+                default=cost_items[:5] if len(cost_items) > 5 else cost_items
+            )
+            selected_categories = df_melted[df_melted['Item'].isin(selected_items)]['Categoria'].unique()
         
         # Analysis type
-        analysis_type = st.sidebar.radio(
+        analysis_type = st.sidebar.selectbox(
             "📊 Tipo de Análise",
-            ["Visão Consolidada", "Análise por Empresa", "Análise Temporal", "Benchmarking"]
+            ["Dashboard Executivo", "Análise de Custos", "Performance por Empresa", "Análise Temporal"]
         )
         
-        # Filter data
+        # Filter data based on selections
         if len(date_range) == 2:
             start_date, end_date = date_range
-            filtered_volume = volume_data[
-                (volume_data['Data'] >= pd.Timestamp(start_date)) &
-                (volume_data['Data'] <= pd.Timestamp(end_date))
-            ].copy()
-            
-            filtered_costs = cost_data[
-                (cost_data['Data'] >= pd.Timestamp(start_date)) &
-                (cost_data['Data'] <= pd.Timestamp(end_date))
+            filtered_data = df_melted[
+                (df_melted['Data'] >= pd.Timestamp(start_date)) &
+                (df_melted['Data'] <= pd.Timestamp(end_date)) &
+                (df_melted['Item'].isin(list(selected_items) + [selected_box_type]))
             ].copy()
         else:
-            filtered_volume = volume_data.copy()
-            filtered_costs = cost_data.copy()
+            filtered_data = df_melted[
+                df_melted['Item'].isin(list(selected_items) + [selected_box_type])
+            ].copy()
         
         # Get latest date for KPIs
-        latest_date = filtered_costs['Data'].max()
+        latest_date = filtered_data['Data'].max()
         
-        # Executive KPIs
-        st.markdown('<h2 class="section-header">📈 Indicadores Executivos</h2>', unsafe_allow_html=True)
-        
-        kpis = create_executive_kpis(filtered_volume, filtered_costs, latest_date)
-        
-        col1, col2, col3, col4, col5 = st.columns(5)
-        
-        with col1:
-            st.metric(
-                "🏭 Produção Total",
-                f"{kpis['total_production']:,.0f}",
-                help="Total de caixas produzidas no período"
-            )
-        
-        with col2:
-            st.metric(
-                "💼 Vendas Total",
-                f"{kpis['total_sales']:,.0f}",
-                help="Total de caixas vendidas no período"
-            )
-        
-        with col3:
-            st.metric(
-                "💰 Custo Total",
-                f"R$ {kpis['total_costs']:,.0f}",
-                f"{kpis['cost_variation']:+.1f}%",
-                help="Custo total consolidado"
-            )
-        
-        with col4:
-            st.metric(
-                "⚡ Eficiência",
-                f"{kpis['efficiency_rate']:.1f}%",
-                help="Taxa de conversão produção → venda"
-            )
-        
-        with col5:
-            st.metric(
-                "📦 Custo por Caixa",
-                f"R$ {kpis['cost_per_box']:.2f}",
-                help="Custo médio por caixa vendida"
-            )
-        
-        st.markdown("---")
-        
-        # Analysis sections based on selected type
-        if analysis_type == "Visão Consolidada":
-            st.markdown('<h2 class="section-header">🌍 Visão Consolidada do Grupo</h2>', unsafe_allow_html=True)
+        # Check if we have enough data
+        if len(filtered_data) == 0:
+            st.markdown('<div class="alert-box">⚠️ <strong>Atenção:</strong> Nenhum dado encontrado com os filtros selecionados. Ajuste os filtros para visualizar as análises.</div>', unsafe_allow_html=True)
+        else:
             
-            col1, col2 = st.columns(2)
-            
-            # Cost breakdown waterfall
-            with col1:
-                st.subheader("💧 Composição de Custos")
-                latest_costs_geral = filtered_costs[
-                    (filtered_costs['Data'] == latest_date) & 
-                    (filtered_costs['Empresa'] == 'GERAL')
+            if analysis_type == "Dashboard Executivo":
+                # Executive KPIs
+                st.markdown('<h2 class="section-header">📈 Indicadores Executivos</h2>', unsafe_allow_html=True)
+                
+                # Calculate cost per box
+                cost_per_box_data = calculate_cost_per_box(df_melted, selected_companies, selected_box_type, latest_date)
+                
+                if len(cost_per_box_data) > 0:
+                    col1, col2, col3, col4, col5 = st.columns(5)
+                    
+                    # Portfolio metrics
+                    portfolio_avg_cost = cost_per_box_data[cost_per_box_data['Empresa'] != 'GERAL']['Custo_por_Caixa'].mean()
+                    portfolio_total_volume = cost_per_box_data[cost_per_box_data['Empresa'] != 'GERAL']['Volume'].sum()
+                    portfolio_total_cost = cost_per_box_data[cost_per_box_data['Empresa'] != 'GERAL']['Custo_Total'].sum()
+                    
+                    # Best and worst performers
+                    companies_only = cost_per_box_data[cost_per_box_data['Empresa'] != 'GERAL']
+                    if len(companies_only) > 0:
+                        best_company = companies_only.loc[companies_only['Custo_por_Caixa'].idxmin()]
+                        worst_company = companies_only.loc[companies_only['Custo_por_Caixa'].idxmax()]
+                        
+                        with col1:
+                            st.metric(
+                                "💰 Custo Médio/Caixa",
+                                f"R$ {portfolio_avg_cost:.2f}",
+                                help="Custo médio por caixa do portfolio"
+                            )
+                        
+                        with col2:
+                            st.metric(
+                                "📦 Volume Total",
+                                f"{portfolio_total_volume:,.0f}",
+                                help="Volume total de caixas no período"
+                            )
+                        
+                        with col3:
+                            st.metric(
+                                "💵 Custo Total",
+                                f"R$ {portfolio_total_cost:,.0f}",
+                                help="Custo total do portfolio"
+                            )
+                        
+                        with col4:
+                            st.metric(
+                                "🏆 Melhor Performance",
+                                f"{best_company['Empresa']}",
+                                f"R$ {best_company['Custo_por_Caixa']:.2f}",
+                                help="Empresa com menor custo por caixa"
+                            )
+                        
+                        with col5:
+                            st.metric(
+                                "⚠️ Atenção Necessária",
+                                f"{worst_company['Empresa']}",
+                                f"R$ {worst_company['Custo_por_Caixa']:.2f}",
+                                delta_color="inverse",
+                                help="Empresa com maior custo por caixa"
+                            )
+                
+                st.markdown("---")
+                
+                # Main visualizations
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    st.subheader("📊 Custo por Caixa - Ranking")
+                    if len(cost_per_box_data) > 0:
+                        companies_data = cost_per_box_data[cost_per_box_data['Empresa'] != 'GERAL'].sort_values('Custo_por_Caixa')
+                        
+                        fig_ranking = px.bar(
+                            companies_data,
+                            x='Custo_por_Caixa',
+                            y='Empresa',
+                            orientation='h',
+                            title="Ranking de Eficiência - Custo por Caixa",
+                            labels={'Custo_por_Caixa': 'Custo por Caixa (R$)', 'Empresa': 'Empresa'},
+                            color='Custo_por_Caixa',
+                            color_continuous_scale='RdYlGn_r'
+                        )
+                        fig_ranking.update_layout(height=400)
+                        fig_ranking.update_traces(
+                            texttemplate='R$ %{x:.2f}',
+                            textposition='outside'
+                        )
+                        st.plotly_chart(fig_ranking, use_container_width=True)
+                
+                with col2:
+                    st.subheader("🎯 Volume vs Eficiência")
+                    if len(cost_per_box_data) > 0:
+                        companies_data = cost_per_box_data[cost_per_box_data['Empresa'] != 'GERAL']
+                        
+                        fig_scatter = px.scatter(
+                            companies_data,
+                            x='Volume',
+                            y='Custo_por_Caixa',
+                            size='Custo_Total',
+                            text='Empresa',
+                            title="Volume vs Custo por Caixa",
+                            labels={'Volume': 'Volume de Caixas', 'Custo_por_Caixa': 'Custo por Caixa (R$)'},
+                            color='Custo_por_Caixa',
+                            color_continuous_scale='RdYlGn_r'
+                        )
+                        fig_scatter.update_traces(textposition='top center')
+                        fig_scatter.update_layout(height=400)
+                        st.plotly_chart(fig_scatter, use_container_width=True)
+                
+                # Composition analysis
+                st.subheader("🔍 Composição de Custos")
+                
+                latest_costs = filtered_data[
+                    (filtered_data['Data'] == latest_date) & 
+                    (filtered_data['Categoria'] != 'Volume') &
+                    (filtered_data['Empresa'].isin(selected_companies))
                 ]
                 
-                cost_by_category = latest_costs_geral.groupby('Categoria')['Valor'].sum().reset_index()
-                cost_by_category = cost_by_category.sort_values('Valor', ascending=False)
-                
-                fig_waterfall = go.Figure(go.Waterfall(
-                    name="Custos",
-                    orientation="v",
-                    measure=["relative"] * len(cost_by_category),
-                    x=cost_by_category['Categoria'],
-                    y=cost_by_category['Valor'],
-                    text=[f"R$ {x:,.0f}" for x in cost_by_category['Valor']],
-                    textposition="outside",
-                    connector={"line": {"color": "rgb(63, 63, 63)"}},
-                ))
-                fig_waterfall.update_layout(height=400, showlegend=False)
-                st.plotly_chart(fig_waterfall, use_container_width=True)
-            
-            # Market share analysis
-            with col2:
-                st.subheader("🎯 Participação de Mercado")
-                market_share = filtered_volume[
-                    (filtered_volume['Item'] == selected_box_type) &
-                    (filtered_volume['Data'] == latest_date) &
-                    (filtered_volume['Empresa'] != 'GERAL')
-                ].groupby('Empresa')['Valor'].sum().reset_index()
-                
-                fig_pie = px.pie(
-                    market_share, 
-                    values='Valor', 
-                    names='Empresa',
-                    title="Distribuição por Empresa",
-                    color_discrete_sequence=px.colors.qualitative.Set3
-                )
-                fig_pie.update_traces(textposition='inside', textinfo='percent+label')
-                fig_pie.update_layout(height=400)
-                st.plotly_chart(fig_pie, use_container_width=True)
-            
-            # Trend analysis
-            st.subheader("📊 Evolução Temporal dos Principais Indicadores")
-            
-            # Calculate monthly aggregates
-            monthly_costs = filtered_costs[filtered_costs['Empresa'] == 'GERAL'].groupby(['Data', 'Categoria'])['Valor'].sum().reset_index()
-            monthly_volume = filtered_volume[
-                (filtered_volume['Item'] == selected_box_type) & 
-                (filtered_volume['Empresa'] == 'GERAL')
-            ].groupby('Data')['Valor'].sum().reset_index()
-            monthly_volume['Categoria'] = 'Volume'
-            
-            # Create area chart
-            fig_area = px.area(
-                monthly_costs,
-                x='Data',
-                y='Valor',
-                color='Categoria',
-                title="Evolução dos Custos por Categoria",
-                labels={'Valor': 'Valor (R$)', 'Data': 'Período'}
-            )
-            fig_area.update_layout(height=400)
-            st.plotly_chart(fig_area, use_container_width=True)
-        
-        elif analysis_type == "Análise por Empresa":
-            st.markdown('<h2 class="section-header">🏢 Análise Comparativa por Empresa</h2>', unsafe_allow_html=True)
-            
-            # Filter for selected companies
-            company_costs = filtered_costs[
-                (filtered_costs['Empresa'].isin(selected_companies)) &
-                (filtered_costs['Data'] == latest_date)
-            ]
-            
-            company_volume = filtered_volume[
-                (filtered_volume['Empresa'].isin(selected_companies)) &
-                (filtered_volume['Item'] == selected_box_type) &
-                (filtered_volume['Data'] == latest_date)
-            ]
-            
-            col1, col2 = st.columns(2)
-            
-            # Cost efficiency scatter plot
-            with col1:
-                st.subheader("💡 Eficiência de Custos")
-                
-                # Calculate cost per box by company
-                company_total_costs = company_costs.groupby('Empresa')['Valor'].sum().reset_index()
-                company_total_volume = company_volume.groupby('Empresa')['Valor'].sum().reset_index()
-                
-                efficiency_data = company_total_costs.merge(
-                    company_total_volume, 
-                    on='Empresa', 
-                    suffixes=('_cost', '_volume')
-                )
-                efficiency_data['cost_per_box'] = efficiency_data['Valor_cost'] / efficiency_data['Valor_volume']
-                
-                fig_scatter = px.scatter(
-                    efficiency_data,
-                    x='Valor_volume',
-                    y='cost_per_box',
-                    text='Empresa',
-                    size='Valor_cost',
-                    title="Volume vs Custo por Caixa",
-                    labels={'Valor_volume': 'Volume de Vendas', 'cost_per_box': 'Custo por Caixa (R$)'}
-                )
-                fig_scatter.update_traces(textposition='top center')
-                fig_scatter.update_layout(height=400)
-                st.plotly_chart(fig_scatter, use_container_width=True)
-            
-            # Stacked bar chart by category
-            with col2:
-                st.subheader("📊 Composição de Custos por Empresa")
-                
-                cost_composition = company_costs.groupby(['Empresa', 'Categoria'])['Valor'].sum().reset_index()
-                
-                fig_stacked = px.bar(
-                    cost_composition,
-                    x='Empresa',
-                    y='Valor',
-                    color='Categoria',
-                    title="Custos por Categoria e Empresa",
-                    labels={'Valor': 'Custo (R$)'}
-                )
-                fig_stacked.update_layout(height=400, xaxis_tickangle=45)
-                st.plotly_chart(fig_stacked, use_container_width=True)
-            
-            # Ranking table
-            st.subheader("🏆 Ranking de Performance")
-            ranking_data = efficiency_data.copy()
-            ranking_data['rank_volume'] = ranking_data['Valor_volume'].rank(ascending=False)
-            ranking_data['rank_efficiency'] = ranking_data['cost_per_box'].rank(ascending=True)
-            ranking_data['score'] = (ranking_data['rank_volume'] + ranking_data['rank_efficiency']) / 2
-            ranking_data = ranking_data.sort_values('score')
-            
-            ranking_display = ranking_data[['Empresa', 'Valor_volume', 'cost_per_box', 'Valor_cost']].copy()
-            ranking_display.columns = ['Empresa', 'Volume', 'Custo por Caixa', 'Custo Total']
-            ranking_display['Volume'] = ranking_display['Volume'].apply(lambda x: f"{x:,.0f}")
-            ranking_display['Custo por Caixa'] = ranking_display['Custo por Caixa'].apply(lambda x: f"R$ {x:.2f}")
-            ranking_display['Custo Total'] = ranking_display['Custo Total'].apply(lambda x: f"R$ {x:,.0f}")
-            
-            st.dataframe(ranking_display, use_container_width=True)
-        
-        elif analysis_type == "Análise Temporal":
-            st.markdown('<h2 class="section-header">⏱️ Análise de Tendências Temporais</h2>', unsafe_allow_html=True)
-            
-            # Multi-line trend analysis
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                st.subheader("📈 Evolução de Custos Principais")
-                
-                main_categories = ['Custo Ração', 'Custo Logística', 'Custo Embalagem', 'Custo Produção']
-                trend_data = filtered_costs[
-                    (filtered_costs['Categoria'].isin(main_categories)) &
-                    (filtered_costs['Empresa'] == 'GERAL')
-                ].groupby(['Data', 'Categoria'])['Valor'].sum().reset_index()
-                
-                fig_trends = px.line(
-                    trend_data,
-                    x='Data',
-                    y='Valor',
-                    color='Categoria',
-                    title="Tendências dos Principais Custos",
-                    labels={'Valor': 'Custo (R$)', 'Data': 'Período'},
-                    markers=True
-                )
-                fig_trends.update_layout(height=400)
-                st.plotly_chart(fig_trends, use_container_width=True)
-            
-            with col2:
-                st.subheader("📊 Volatilidade por Categoria")
-                
-                # Calculate coefficient of variation
-                volatility_data = filtered_costs[
-                    filtered_costs['Empresa'] == 'GERAL'
-                ].groupby('Categoria')['Valor'].agg(['mean', 'std']).reset_index()
-                volatility_data['cv'] = (volatility_data['std'] / volatility_data['mean']) * 100
-                volatility_data = volatility_data.sort_values('cv', ascending=True)
-                
-                fig_volatility = px.bar(
-                    volatility_data,
-                    x='cv',
-                    y='Categoria',
-                    orientation='h',
-                    title="Coeficiente de Variação por Categoria (%)",
-                    labels={'cv': 'Coeficiente de Variação (%)'}
-                )
-                fig_volatility.update_layout(height=400)
-                st.plotly_chart(fig_volatility, use_container_width=True)
-            
-            # Year-over-year comparison
-            st.subheader("📅 Comparação Ano a Ano")
-            
-            # Extract year and month for comparison
-            filtered_costs['Year'] = filtered_costs['Data'].dt.year
-            filtered_costs['Month'] = filtered_costs['Data'].dt.month
-            
-            yoy_data = filtered_costs[
-                (filtered_costs['Empresa'] == 'GERAL') &
-                (filtered_costs['Year'].isin([2024, 2025]))
-            ].groupby(['Year', 'Month', 'Categoria'])['Valor'].sum().reset_index()
-            
-            fig_yoy = px.bar(
-                yoy_data,
-                x='Month',
-                y='Valor',
-                color='Categoria',
-                facet_col='Year',
-                title="Comparação Mensal 2024 vs 2025",
-                labels={'Valor': 'Custo (R$)', 'Month': 'Mês'}
-            )
-            fig_yoy.update_layout(height=400)
-            st.plotly_chart(fig_yoy, use_container_width=True)
-        
-        elif analysis_type == "Benchmarking":
-            st.markdown('<h2 class="section-header">🎯 Benchmarking e Performance</h2>', unsafe_allow_html=True)
-            
-            # Performance metrics by company
-            benchmark_costs = filtered_costs[
-                (filtered_costs['Empresa'].isin(selected_companies)) &
-                (filtered_costs['Data'] == latest_date)
-            ].groupby(['Empresa', 'Categoria'])['Valor'].sum().reset_index()
-            
-            benchmark_volume = filtered_volume[
-                (filtered_volume['Empresa'].isin(selected_companies)) &
-                (filtered_volume['Item'] == selected_box_type) &
-                (filtered_volume['Data'] == latest_date)
-            ].groupby('Empresa')['Valor'].sum().reset_index()
-            
-            # Create benchmark matrix
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                st.subheader("🎯 Matriz de Performance")
-                
-                # Calculate metrics for each company
-                metrics_list = []
-                for company in selected_companies:
-                    company_cost = benchmark_costs[benchmark_costs['Empresa'] == company]['Valor'].sum()
-                    company_vol = benchmark_volume[benchmark_volume['Empresa'] == company]['Valor'].iloc[0] if len(benchmark_volume[benchmark_volume['Empresa'] == company]) > 0 else 0
+                if len(latest_costs) > 0:
+                    cost_composition = latest_costs.groupby(['Empresa', 'Categoria'])['Valor'].sum().reset_index()
                     
-                    if company_vol > 0:
-                        metrics_list.append({
-                            'Empresa': company,
-                            'Custo_Total': company_cost,
-                            'Volume': company_vol,
-                            'Custo_Unitario': company_cost / company_vol,
-                            'Tamanho': company_vol  # For bubble size
-                        })
-                
-                metrics_df = pd.DataFrame(metrics_list)
-                
-                if len(metrics_df) > 0:
-                    fig_matrix = px.scatter(
-                        metrics_df,
-                        x='Volume',
-                        y='Custo_Unitario',
-                        size='Tamanho',
-                        text='Empresa',
-                        title="Volume vs Eficiência de Custos",
-                        labels={'Volume': 'Volume de Vendas', 'Custo_Unitario': 'Custo por Caixa (R$)'}
+                    fig_composition = px.sunburst(
+                        cost_composition,
+                        path=['Categoria', 'Empresa'],
+                        values='Valor',
+                        title="Composição de Custos por Categoria e Empresa"
                     )
-                    fig_matrix.update_traces(textposition='top center')
-                    fig_matrix.update_layout(height=400)
-                    st.plotly_chart(fig_matrix, use_container_width=True)
+                    fig_composition.update_layout(height=500)
+                    st.plotly_chart(fig_composition, use_container_width=True)
+            
+            elif analysis_type == "Análise de Custos":
+                st.markdown('<h2 class="section-header">💰 Análise Detalhada de Custos</h2>', unsafe_allow_html=True)
+                
+                # Filter cost data
+                cost_data = filtered_data[
+                    (filtered_data['Categoria'] != 'Volume') &
+                    (filtered_data['Empresa'].isin(selected_companies + ['GERAL']))
+                ]
+                
+                if len(cost_data) > 0:
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        st.subheader("📈 Evolução dos Custos Principais")
+                        
+                        # Monthly cost evolution by category
+                        monthly_costs = cost_data.groupby(['Data', 'Categoria'])['Valor'].sum().reset_index()
+                        
+                        fig_evolution = px.line(
+                            monthly_costs,
+                            x='Data',
+                            y='Valor',
+                            color='Categoria',
+                            title="Evolução Mensal dos Custos por Categoria",
+                            labels={'Valor': 'Custo (R$)', 'Data': 'Período'}
+                        )
+                        fig_evolution.update_layout(height=400)
+                        st.plotly_chart(fig_evolution, use_container_width=True)
+                    
+                    with col2:
+                        st.subheader("📊 Participação por Categoria")
+                        
+                        # Cost breakdown pie chart
+                        category_totals = cost_data.groupby('Categoria')['Valor'].sum().reset_index()
+                        category_totals = category_totals.sort_values('Valor', ascending=False)
+                        
+                        fig_pie = px.pie(
+                            category_totals,
+                            values='Valor',
+                            names='Categoria',
+                            title="Distribuição dos Custos por Categoria"
+                        )
+                        fig_pie.update_layout(height=400)
+                        st.plotly_chart(fig_pie, use_container_width=True)
+                    
+                    # Cost comparison table
+                    st.subheader("📋 Comparativo de Custos por Empresa")
+                    
+                    latest_comparison = cost_data[cost_data['Data'] == latest_date]
+                    comparison_table = latest_comparison.pivot_table(
+                        index='Empresa',
+                        columns='Categoria',
+                        values='Valor',
+                        aggfunc='sum',
+                        fill_value=0
+                    )
+                    
+                    # Format as currency
+                    comparison_formatted = comparison_table.applymap(lambda x: f"R$ {x:,.2f}" if x != 0 else "-")
+                    st.dataframe(comparison_formatted, use_container_width=True)
+            
+            elif analysis_type == "Performance por Empresa":
+                st.markdown('<h2 class="section-header">🏢 Performance Comparativa por Empresa</h2>', unsafe_allow_html=True)
+                
+                if len(selected_companies) > 0:
+                    # Company performance metrics
+                    company_data = filtered_data[
+                        (filtered_data['Empresa'].isin(selected_companies)) &
+                        (filtered_data['Data'] == latest_date)
+                    ]
+                    
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        st.subheader("🎯 Radar de Performance")
+                        
+                        # Create radar chart for top categories
+                        main_categories = list(selected_categories)[:5]  # Limit to 5 for readability
+                        radar_data = company_data[
+                            (company_data['Categoria'].isin(main_categories)) &
+                            (company_data['Categoria'] != 'Volume')
+                        ]
+                        
+                        if len(radar_data) > 0:
+                            radar_pivot = radar_data.pivot_table(
+                                index='Empresa',
+                                columns='Categoria',
+                                values='Valor',
+                                aggfunc='sum',
+                                fill_value=0
+                            )
+                            
+                            # Normalize for radar chart
+                            radar_normalized = radar_pivot.div(radar_pivot.max()) * 100
+                            
+                            fig_radar = go.Figure()
+                            
+                            for company in selected_companies[:5]:  # Limit companies for readability
+                                if company in radar_normalized.index:
+                                    values = radar_normalized.loc[company].tolist()
+                                    categories = radar_normalized.columns.tolist()
+                                    
+                                    fig_radar.add_trace(go.Scatterpolar(
+                                        r=values + [values[0]],  # Close the polygon
+                                        theta=categories + [categories[0]],
+                                        fill='toself',
+                                        name=company
+                                    ))
+                            
+                            fig_radar.update_layout(
+                                polar=dict(
+                                    radialaxis=dict(
+                                        visible=True,
+                                        range=[0, 100]
+                                    )),
+                                title="Comparação Normalizada por Categoria (%)",
+                                height=400
+                            )
+                            st.plotly_chart(fig_radar, use_container_width=True)
+                    
+                    with col2:
+                        st.subheader("📊 Custos por Empresa")
+                        
+                        company_costs = company_data[
+                            company_data['Categoria'] != 'Volume'
+                        ].groupby(['Empresa', 'Categoria'])['Valor'].sum().reset_index()
+                        
+                        fig_company_costs = px.bar(
+                            company_costs,
+                            x='Empresa',
+                            y='Valor',
+                            color='Categoria',
+                            title="Custos Totais por Empresa e Categoria",
+                            labels={'Valor': 'Custo (R$)'}
+                        )
+                        fig_company_costs.update_layout(height=400, xaxis_tickangle=45)
+                        st.plotly_chart(fig_company_costs, use_container_width=True)
+                    
+                    # Performance ranking
+                    st.subheader("🏆 Ranking de Performance")
+                    
+                    cost_per_box_current = calculate_cost_per_box(df_melted, selected_companies, selected_box_type, latest_date)
+                    
+                    if len(cost_per_box_current) > 0:
+                        ranking_data = cost_per_box_current[cost_per_box_current['Empresa'] != 'GERAL'].copy()
+                        ranking_data = ranking_data.sort_values('Custo_por_Caixa')
+                        ranking_data['Posição'] = range(1, len(ranking_data) + 1)
+                        
+                        # Format for display
+                        ranking_display = ranking_data[['Posição', 'Empresa', 'Volume', 'Custo_Total', 'Custo_por_Caixa']].copy()
+                        ranking_display['Volume'] = ranking_display['Volume'].apply(lambda x: f"{x:,.0f}")
+                        ranking_display['Custo_Total'] = ranking_display['Custo_Total'].apply(lambda x: f"R$ {x:,.0f}")
+                        ranking_display['Custo_por_Caixa'] = ranking_display['Custo_por_Caixa'].apply(lambda x: f"R$ {x:.2f}")
+                        ranking_display.columns = ['🏆 Posição', '🏢 Empresa', '📦 Volume', '💰 Custo Total', '📊 Custo/Caixa']
+                        
+                        st.dataframe(ranking_display, use_container_width=True, hide_index=True)
+            
+            elif analysis_type == "Análise Temporal":
+                st.markdown('<h2 class="section-header">⏱️ Análise de Tendências Temporais</h2>', unsafe_allow_html=True)
+                
+                temporal_data = filtered_data[
+                    (filtered_data['Categoria'] != 'Volume') &
+                    (filtered_data['Empresa'].isin(selected_companies + ['GERAL']))
+                ]
+                
+                if len(temporal_data) > 0:
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        st.subheader("📈 Tendências por Categoria")
+                        
+                        # Monthly trends by category
+                        monthly_trends = temporal_data.groupby(['Data', 'Categoria'])['Valor'].sum().reset_index()
+                        
+                        fig_trends = px.line(
+                            monthly_trends,
+                            x='Data',
+                            y='Valor',
+                            color='Categoria',
+                            title="Tendências Mensais por Categoria",
+                            labels={'Valor': 'Custo (R$)', 'Data': 'Período'},
+                            markers=True
+                        )
+                        fig_trends.update_layout(height=400)
+                        st.plotly_chart(fig_trends, use_container_width=True)
+                    
+                    with col2:
+                        st.subheader("📊 Variabilidade dos Custos")
+                        
+                        # Calculate coefficient of variation
+                        cv_data = temporal_data.groupby('Categoria')['Valor'].agg(['mean', 'std']).reset_index()
+                        cv_data['cv'] = (cv_data['std'] / cv_data['mean']) * 100
+                        cv_data = cv_data.sort_values('cv')
+                        
+                        fig_cv = px.bar(
+                            cv_data,
+                            x='cv',
+                            y='Categoria',
+                            orientation='h',
+                            title="Coeficiente de Variação por Categoria (%)",
+                            labels={'cv': 'Coeficiente de Variação (%)'},
+                            color='cv',
+                            color_continuous_scale='RdYlBu_r'
+                        )
+                        fig_cv.update_layout(height=400)
+                        st.plotly_chart(fig_cv, use_container_width=True)
+                    
+                    # Year-over-year comparison
+                    st.subheader("📅 Comparação Ano a Ano")
+                    
+                    temporal_data['Year'] = temporal_data['Data'].dt.year
+                    temporal_data['Month'] = temporal_data['Data'].dt.month
+                    
+                    yoy_data = temporal_data[
+                        temporal_data['Year'].isin([2024, 2025])
+                    ].groupby(['Year', 'Month', 'Categoria'])['Valor'].sum().reset_index()
+                    
+                    if len(yoy_data) > 0:
+                        fig_yoy = px.bar(
+                            yoy_data,
+                            x='Month',
+                            y='Valor',
+                            color='Categoria',
+                            facet_col='Year',
+                            title="Comparação Mensal 2024 vs 2025",
+                            labels={'Valor': 'Custo (R$)', 'Month': 'Mês'}
+                        )
+                        fig_yoy.update_layout(height=400)
+                        st.plotly_chart(fig_yoy, use_container_width=True)
+            
+            # Export functionality
+            st.markdown("---")
+            st.subheader("📥 Exportar Dados")
+            
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                if st.button("📊 Exportar Dados Filtrados", use_container_width=True):
+                    csv_data = filtered_data.to_csv(index=False).encode('utf-8')
+                    st.download_button(
+                        label="📥 Download CSV",
+                        data=csv_data,
+                        file_name=f'dados_filtrados_{datetime.now().strftime("%Y%m%d")}.csv',
+                        mime='text/csv'
+                    )
             
             with col2:
-                st.subheader("📊 Benchmarking por Categoria")
-                
-                # Create radar chart for top categories
-                main_cats = ['Custo Ração', 'Custo Logística', 'Custo Embalagem']
-                radar_data = benchmark_costs[benchmark_costs['Categoria'].isin(main_cats)]
-                
-                if len(radar_data) > 0:
-                    # Normalize data for radar chart
-                    for cat in main_cats:
-                        cat_data = radar_data[radar_data['Categoria'] == cat]
-                        if len(cat_data) > 0:
-                            max_val = cat_data['Valor'].max()
-                            radar_data.loc[radar_data['Categoria'] == cat, 'Valor_Norm'] = cat_data['Valor'] / max_val * 100
-                    
-                    fig_radar = go.Figure()
-                    
-                    for company in selected_companies[:5]:  # Limit to 5 companies for readability
-                        company_data = radar_data[radar_data['Empresa'] == company]
-                        if len(company_data) > 0:
-                            fig_radar.add_trace(go.Scatterpolar(
-                                r=company_data['Valor_Norm'].tolist() + [company_data['Valor_Norm'].tolist()[0]],
-                                theta=company_data['Categoria'].tolist() + [company_data['Categoria'].tolist()[0]],
-                                fill='toself',
-                                name=company
-                            ))
-                    
-                    fig_radar.update_layout(
-                        polar=dict(
-                            radialaxis=dict(
-                                visible=True,
-                                range=[0, 100]
-                            )),
-                        showlegend=True,
-                        title="Comparação Normalizada por Categoria",
-                        height=400
+                if len(cost_per_box_data) > 0 and st.button("📈 Exportar Análise de Performance", use_container_width=True):
+                    performance_csv = cost_per_box_data.to_csv(index=False).encode('utf-8')
+                    st.download_button(
+                        label="📥 Download Performance CSV",
+                        data=performance_csv,
+                        file_name=f'performance_analysis_{datetime.now().strftime("%Y%m%d")}.csv',
+                        mime='text/csv'
                     )
-                    st.plotly_chart(fig_radar, use_container_width=True)
-        
-        # Advanced Analytics Section
-        st.markdown("---")
-        st.markdown('<h2 class="section-header">🔬 Analytics Avançados</h2>', unsafe_allow_html=True)
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            # Cost correlation analysis
-            st.subheader("🔗 Correlação entre Categorias")
-            
-            correlation_data = filtered_costs[
-                filtered_costs['Empresa'] == 'GERAL'
-            ].pivot_table(index='Data', columns='Categoria', values='Valor', aggfunc='sum')
-            
-            correlation_matrix = correlation_data.corr()
-            
-            fig_corr = px.imshow(
-                correlation_matrix,
-                title="Matriz de Correlação",
-                color_continuous_scale='RdBu',
-                aspect='auto'
-            )
-            fig_corr.update_layout(height=400)
-            st.plotly_chart(fig_corr, use_container_width=True)
-        
-        with col2:
-            # Seasonal analysis
-            st.subheader("🌍 Análise Sazonal")
-            
-            seasonal_data = filtered_costs[filtered_costs['Empresa'] == 'GERAL'].copy()
-            seasonal_data['Month'] = seasonal_data['Data'].dt.month
-            seasonal_summary = seasonal_data.groupby(['Month', 'Categoria'])['Valor'].mean().reset_index()
-            
-            # Focus on main categories for clarity
-            main_seasonal = seasonal_summary[seasonal_summary['Categoria'].isin(['Custo Ração', 'Custo Logística', 'Custo Embalagem'])]
-            
-            fig_seasonal = px.line(
-                main_seasonal,
-                x='Month',
-                y='Valor',
-                color='Categoria',
-                title="Padrão Sazonal (Média Mensal)",
-                labels={'Month': 'Mês', 'Valor': 'Custo Médio (R$)'},
-                markers=True
-            )
-            fig_seasonal.update_layout(height=400)
-            st.plotly_chart(fig_seasonal, use_container_width=True)
-        
-        # Export functionality
-        st.markdown("---")
-        col1, col2, col3 = st.columns([1, 1, 1])
-        
-        with col2:
-            if st.button("📥 Gerar Relatório Executivo", use_container_width=True):
-                # Create comprehensive report
-                report_data = {
-                    'KPIs': kpis,
-                    'Data_Analise': latest_date.strftime('%d/%m/%Y'),
-                    'Empresas_Analisadas': selected_companies,
-                    'Periodo': f"{start_date} a {end_date}"
-                }
-                
-                report_text = f"""
-# RELATÓRIO EXECUTIVO - GLOBAL EGGS
-
-## Período: {report_data['Periodo']}
-
-### INDICADORES PRINCIPAIS
-- Produção Total: {kpis['total_production']:,.0f} caixas
-- Vendas Total: {kpis['total_sales']:,.0f} caixas
-- Custo Total: R$ {kpis['total_costs']:,.0f}
-- Eficiência Operacional: {kpis['efficiency_rate']:.1f}%
-- Custo por Caixa: R$ {kpis['cost_per_box']:.2f}
-
-### ANÁLISE DE PERFORMANCE
-- Variação de Custos (M/M): {kpis['cost_variation']:+.1f}%
-- Empresas Analisadas: {len(selected_companies)}
-
-### RECOMENDAÇÕES
-[Espaço para inserir recomendações baseadas nos dados analisados]
-                """
-                
-                st.download_button(
-                    label="📄 Download Relatório",
-                    data=report_text,
-                    file_name=f"relatorio_executivo_{datetime.now().strftime('%Y%m%d')}.txt",
-                    mime="text/plain"
-                )
         
         # Methodology section
         with st.expander("📖 Metodologia e Definições"):
             st.markdown("""
-            ### Fonte dos Dados
-            - **Base**: Compilado mensal de todas as empresas do grupo
+            ### 📊 Fonte dos Dados
+            - **Base**: Dados consolidados mensais de todas as empresas do grupo Global Eggs
             - **Período**: Janeiro 2024 a Maio 2025
-            - **Frequência**: Dados mensais consolidados
+            - **Atualização**: Dados mensais processados automaticamente
             
-            ### Categorização de Custos
-            - **Custo Ração**: Principal insumo produtivo
-            - **Custo Logística**: Distribuição e transporte
-            - **Custo Embalagem**: Materiais de acondicionamento
-            - **Custo Produção**: Mão de obra e processos produtivos
+            ### 🎯 Categorização de Custos
+            - **Custo Ração**: Principal insumo produtivo (maior componente de custo)
+            - **Custo Logística**: Distribuição, transporte e movimentação
+            - **Custo Embalagem**: Materiais de acondicionamento e embalagem
+            - **Custo Produção**: Mão de obra direta e processos produtivos
+            - **Custo Manutenção**: Manutenção preventiva e corretiva de equipamentos
             - **Despesas Operacionais**: Vendas, administrativas e tributárias
+            - **Sanidade Animal**: Vacinas, medicamentos e cuidados veterinários
             
-            ### Métricas Calculadas
-            - **Eficiência**: Taxa de conversão produção → vendas
-            - **Custo por Caixa**: Custo total / Volume vendido
-            - **Coeficiente de Variação**: Medida de volatilidade (σ/μ)
+            ### 📈 Métricas Calculadas
+            - **Custo por Caixa**: Custo total dividido pelo volume de caixas vendidas/produzidas
+            - **Coeficiente de Variação**: Medida de volatilidade dos custos (desvio padrão / média)
+            - **Performance Ranking**: Baseado na eficiência de custo por caixa
+            - **Participação**: Percentual de cada categoria no custo total
             
-            ### Metodologia de Benchmarking
-            - Normalização por volume para comparabilidade
-            - Análise multivariada para ranking de performance
-            - Correlações temporais para identificação de padrões
+            ### 🔍 Filtros Disponíveis
+            - **Período**: Seleção de intervalo de datas para análise
+            - **Empresas**: Múltipla seleção de subsidiárias
+            - **Tipo de Caixa**: Vendidas vs Produzidas
+            - **Categorias/Itens**: Filtragem por tipo de custo ou item específico
+            
+            ### ⚠️ Observações Importantes
+            - Valores zerados ou inválidos são automaticamente excluídos
+            - Análises baseadas no último mês disponível nos dados
+            - GERAL representa o consolidado de todas as empresas
+            - Rankings consideram apenas empresas com volume > 0
             """)
     
 else:
     st.info("👆 Por favor, faça upload do arquivo Excel para acessar o Dashboard Executivo.")
     
-    # Show enhanced data structure info
+    # Enhanced data structure info
     with st.expander("📋 Estrutura Esperada dos Dados"):
         st.markdown("""
-        ## Estrutura da Base de Dados Consolidada
+        ## 📊 Estrutura da Base de Dados Consolidada
         
-        O arquivo deve conter dados compilados de múltiplas tabelas mensais:
+        O arquivo deve conter dados compilados de múltiplas tabelas mensais seguindo a estrutura:
         
-        ### Colunas Obrigatórias:
-        | Coluna | Tipo | Descrição |
-        |--------|------|-----------|
-        | **Empresa** | Texto | Nome da subsidiária (JOSIDITH, MARUTANI, etc.) |
-        | **Tipo de Caixa** | Texto | "Caixas Vendidas" ou "Caixas Produzidas" |
-        | **Item** | Texto | Categoria de custo ou métrica |
-        | **jan/24...mai/25** | Numérico | Valores mensais |
+        ### 📝 Colunas Obrigatórias:
+        | Coluna | Tipo | Descrição | Exemplo |
+        |--------|------|-----------|---------|
+        | **Empresa** | Texto | Nome da subsidiária | JOSIDITH, MARUTANI, etc. |
+        | **Tipo de Caixa** | Texto | Tipo de volume | "Caixas Vendidas" ou "Caixas Produzidas" |
+        | **Item** | Texto | Categoria/métrica específica | "Custo Ração", "Despesas Vendas", etc. |
+        | **jan/24...mai/25** | Numérico | Valores mensais | Formato mmm/aa |
         
-        ### Categorias de Análise:
-        - **Volume**: Caixas Produzidas/Vendidas
-        - **Custos Diretos**: Ração, Embalagem, Logística
-        - **Custos Indiretos**: Manutenção, Utilidades, M.O.
-        - **Despesas**: Vendas, Administrativas, Tributárias
-        - **Outros**: Depreciação, Perdas, etc.
+        ### 🏭 Empresas do Grupo Global Eggs:
+        **Subsidiárias Operacionais:**
+        - JOSIDITH, MARUTANI, STRAGLIOTTO
+        - ASA, IANA, AVIMOR, ALEXAVES
+        - MACIAMBU, BL GO, BL STA MARIA
+        - KATAYAMA, VITAGEMA, TAMAGO
         
-        ### Empresas do Grupo:
-        JOSIDITH, MARUTANI, STRAGLIOTTO, ASA, IANA, AVIMOR, ALEXAVES, 
-        MACIAMBU, BL GO, BL STA MARIA, KATAYAMA, VITAGEMA, TAMAGO, GERAL
+        **Consolidado:** GERAL (soma de todas as subsidiárias)
+        
+        ### 📊 Principais Categorias de Análise:
+        
+        **Volume:**
+        - Caixas Vendidas / Caixas Produzidas
+        
+        **Custos Diretos:**
+        - Custo Ração (maior componente)
+        - Custo Embalagem, Logística
+        - Custo Produção MO
+        
+        **Custos Indiretos:**
+        - Custo Manutenção, Utilidades
+        - Sanidade Animal (Vacinas/Medicamentos)
+        
+        **Despesas:**
+        - Despesas Vendas, Administrativas
+        - Despesas Tributárias
+        - Depreciação Biológica
+        
+        ### 🎯 Dicas para Melhores Análises:
+        1. **Selecione empresas relevantes** para comparação
+        2. **Use filtros de categoria** para análises focadas
+        3. **Compare períodos** para identificar tendências
+        4. **Analise custo por caixa** para eficiência operacional
+        5. **Monitore variabilidade** para gestão de riscos
         """)
 
 # Run command: streamlit run app.py
