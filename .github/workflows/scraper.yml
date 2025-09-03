@@ -2,11 +2,11 @@ name: Mercadona Scraper
 
 on:
   schedule:
-    - cron: "0 10 * * *"   # roda todo dia às 10:00 UTC (~07:00 no Brasil -03)
-  workflow_dispatch:        # permite rodar manualmente pela aba Actions
+    - cron: "0 10 * * *"   # roda todo dia às 10:00 UTC (~07:00 BRT)
+  workflow_dispatch:        # permite rodar manualmente
 
 permissions:
-  contents: write           # permite commitar arquivos gerados
+  contents: write           # precisa para commitar arquivos gerados
 
 jobs:
   run-scraper:
@@ -29,9 +29,13 @@ jobs:
 
     - name: Commit and push results
       run: |
+        echo "::group::List outputs"
         ls -lah
+        ls -lah data || true
+        ls -lah data/mercadona || true
+        echo "::endgroup::"
         git config user.name "github-actions"
         git config user.email "actions@github.com"
-        git add mercadona_huevos_*.csv mercadona_huevos_*.xlsx 2>/dev/null || true
+        git add data/mercadona/*.csv data/mercadona/*.xlsx 2>/dev/null || true
         git commit -m "Data update: $(date -u +'%Y-%m-%d %H:%M UTC')" || echo "Nada novo para commitar"
         git push
